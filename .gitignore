@@ -1,0 +1,6 @@
+﻿# Configuration locale : contient les identifiants WiFi et MQTT
+config.h
+
+build/
+*.hex
+*.elf

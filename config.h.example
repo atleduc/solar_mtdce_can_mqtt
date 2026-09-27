@@ -1,0 +1,148 @@
+// ============================================================================
+// config.h - Tous les reglages de la passerelle CAN -> MQTT
+// Seul ce fichier doit etre modifie pour une installation classique.
+// ============================================================================
+#pragma once
+
+#include <Arduino.h>
+#include <mcp_can_dfs.h>
+
+// ---------------------------------------------------------------------------
+// Reseau WiFi
+// ---------------------------------------------------------------------------
+#define WIFI_SSID           "VOTRE_SSID"
+#define WIFI_PASS           "VOTRE_MOT_DE_PASSE_WIFI"
+
+// Reseau de repli, essaye si le premier ne repond pas. Mettre "" pour aucun.
+//
+// Ce n'est pas un luxe : changer WIFI_SSID et televerser par OTA est une
+// manoeuvre a sens unique. Si la carte ne retrouve pas le nouveau reseau -
+// mauvais mot de passe, repeteur hors de portee - elle devient injoignable et
+// il faut aller la rebrancher en USB. Avec un repli, elle revient toujours sur
+// l'ancien reseau et reste accessible.
+#define WIFI_SSID_2         "VOTRE_SSID_DE_REPLI"
+#define WIFI_PASS_2         "VOTRE_MOT_DE_PASSE_WIFI"
+
+// Duree d'essai de chaque reseau, et delai avant de reprendre la recherche
+// depuis le debut quand la liaison est perdue durablement.
+#define WIFI_ESSAI_MS       12000UL
+#define WIFI_RELANCE_MS     60000UL
+
+#define NOM_HOTE            "mtdce-gateway"     // nom mDNS / OTA
+
+// ---------------------------------------------------------------------------
+// Broker MQTT
+// ---------------------------------------------------------------------------
+#define MQTT_HOTE           "192.168.1.x"
+#define MQTT_PORT           1883
+#define MQTT_UTILISATEUR    "VOTRE_UTILISATEUR"                  // "" = pas d'authentification
+#define MQTT_MOTDEPASSE     "VOTRE_MOT_DE_PASSE_MQTT"
+#define MQTT_BASE           "mtdc/mtdce"  // prefixe de tous les topics
+
+// ---------------------------------------------------------------------------
+// Cablage MCP2515 (SPI materiel VSPI de l'ESP32)
+// ---------------------------------------------------------------------------
+#define PIN_CAN_SCK         18
+#define PIN_CAN_MISO        19
+#define PIN_CAN_MOSI        23
+#define PIN_CAN_CS           5
+#define PIN_CAN_INT          4                  // broche INT du MCP2515
+
+// Quartz soude sur le module MCP2515 : MCP_8MHZ ou MCP_16MHZ.
+// Se lit directement sur le boitier metallique du quartz (8.000 / 16.000).
+// Une erreur ici = aucune trame recue, ou des trames corrompues.
+#define CAN_QUARTZ          MCP_8MHZ
+
+// ---------------------------------------------------------------------------
+// Bus CAN
+// ---------------------------------------------------------------------------
+// Le protocole SCBI de SOREL fonctionne a 250 kbit/s. La detection automatique
+// reste utile pour confirmer que le cablage est bon : si 250k ne remonte rien
+// et qu'aucun autre debit non plus, le probleme est materiel.
+#define CAN_AUTO_DEBIT      true
+#define CAN_DEBIT_FIXE      CAN_250KBPS
+
+// Mode ecoute seule : le MCP2515 n'emet rien, pas meme les acquittements.
+//
+// A false sur un bus a deux noeuds, ce qui est le cas ici : en CAN, un
+// emetteur a besoin qu'au moins un autre noeud acquitte chaque trame. Seuls
+// nous et le MTDC-E sommes sur le bus ; en ecoute seule le regulateur n'est
+// jamais acquitte, retransmet, et passe en bus-off apres 256 echecs.
+//
+// En mode normal le programme n'emet toujours aucune trame - il n'y a aucun
+// appel d'envoi dans le code - il ajoute seulement le bit d'acquittement.
+//
+// A remettre a true uniquement pour se greffer sur un bus qui compte deja
+// deux noeuds ou plus, capables de s'acquitter entre eux.
+#define CAN_ECOUTE_SEULE    false
+
+// ---------------------------------------------------------------------------
+// Protocole SOREL (SCBI)
+// ---------------------------------------------------------------------------
+// Les identifiants SCBI sont de la forme :
+//     0x1000_0000 | groupe << 16 | adresse << 8 | 0x80
+// ou "adresse" designe le noeud sur le bus. Elle se lit dans le menu du
+// regulateur ("CAN ID"), en decimal : 26 -> 0x1A.
+//
+// SOREL_ADRESSE_AUTO = 1 ignore cet octet, utile tant que l'adresse est
+// inconnue. A 0, seul le regulateur d'adresse SOREL_ADRESSE est decode, ce qui
+// evite toute confusion si un autre noeud partage le bus - le cas ici, des
+// trames d'adresse 0x00 ayant ete observees.
+//
+// Le dernier octet n'est pas toujours 0x80 : des trames en 0x85 et 0x0B
+// circulent aussi (autres types de message, non identifies). Le masque les
+// laisse de cote, elles restent visibles sur <base>/brut.
+#define SOREL_ADRESSE_AUTO  0
+#define SOREL_ADRESSE       0x1A   // releve sur le regulateur : "CAN ID 26" en decimal
+
+// Disposition des octets dans la trame :
+//   1 : [0x05][index][valeur LSB][valeur MSB]   (trace relevee sur un LTDC)
+//   2 : [index][valeur LSB][valeur MSB]         (can-ltdc-logger)
+//   0 : les deux a la fois, pour identifier la bonne au demarrage.
+//
+// Confirmee sur ce MTDC-E : variante 2, DLC 5. Trame relevee
+// 10011A80 : 00 BE 00 00 00 -> capteur 0, 0x00BE = 190, soit 19,0 degC.
+#define SOREL_VARIANTE      2
+
+// ---------------------------------------------------------------------------
+// Publication
+// ---------------------------------------------------------------------------
+// Trames brutes (hexadecimal) sur <base>/brut/<id>/<index>. A garder actif tant
+// que le decodage n'est pas verifie, peut etre coupe ensuite (topic cmd).
+//
+// Le second niveau est le premier octet de donnees, qui sert d'index de
+// multiplexage dans le protocole SCBI. Sans lui, toutes les grandeurs portees
+// par un meme identifiant s'ecraseraient sur un seul topic. Une trame de DLC 0
+// n'a pas ce niveau.
+#define PUBLIER_BRUT        true
+
+// Anti-flood : une meme voie (identifiant + index) n'est jamais republiee plus
+// souvent que INTERVALLE_MIN_MS, et l'est au moins une fois toutes les
+// INTERVALLE_MAX_MS meme si la donnee n'a pas change (rafraichissement).
+#define INTERVALLE_MIN_MS   1000UL
+#define INTERVALLE_MAX_MS   60000UL
+
+// Inventaire periodique des identifiants observes sur <base>/decouverte.
+// C'est l'outil de retro-ingenierie du protocole du MTDC-E.
+#define PUBLIER_DECOUVERTE  true
+#define INTERVALLE_DECOUVERTE_MS 15000UL
+
+// Statistiques (uptime, RSSI, trames/s, pertes) sur <base>/etat/stats.
+#define INTERVALLE_STATS_MS 10000UL
+
+// ---------------------------------------------------------------------------
+// Decodage
+// ---------------------------------------------------------------------------
+// 0 = trames brutes uniquement, 1 = decodage selon decodage.cpp.
+#define DECODAGE_ACTIF      1     // 0 ou 1 (teste par le preprocesseur)
+
+// Publication des messages de decouverte Home Assistant pour chaque signal
+// decode. A n'activer qu'apres avoir verifie les valeurs publiees.
+#define HA_DISCOVERY        0     // 0 ou 1
+#define HA_PREFIXE          "homeassistant"
+
+// ---------------------------------------------------------------------------
+// Dimensionnement interne
+// ---------------------------------------------------------------------------
+#define TAILLE_FILE         256   // trames CAN tamponnees avant publication
+#define MAX_IDS_SUIVIS      256   // voies suivies : couples (identifiant, index)
